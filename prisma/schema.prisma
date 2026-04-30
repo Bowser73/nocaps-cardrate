@@ -1,0 +1,238 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+url      = "file:./dev.db"
+}
+
+enum Sport {
+  BASEBALL
+  FOOTBALL
+  BASKETBALL
+  HOCKEY
+  SOCCER
+  COMBAT
+  POKEMON_TCG
+  RACING
+  ENTERTAINMENT
+  OTHER
+}
+
+enum CollectionStatus {
+  RAW
+  GRADED
+  LISTED
+  SOLD
+}
+
+enum ScanStatus {
+  REVIEW
+  SAVED
+  FAILED
+}
+
+enum ListingKind {
+  SOLD_COMP
+  ACTIVE_LISTING
+}
+
+model User {
+  id              String           @id @default(cuid())
+  name            String?
+  email           String?          @unique
+  emailVerified   DateTime?
+  image           String?
+  accounts        Account[]
+  sessions        Session[]
+  scans           Scan[]
+  collectionItems CollectionItem[]
+  watchlistItems  WatchlistItem[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Card {
+  id              String           @id @default(cuid())
+  sport           Sport
+  playerName      String
+  year            Int?
+  brand           String?
+  setName         String?
+  cardNumber      String?
+  parallel        String?
+  serialNumber    String?
+  rookieFlag      Boolean          @default(false)
+  autographFlag   Boolean          @default(false)
+  relicFlag       Boolean          @default(false)
+  team            String?
+  normalizedQuery String
+  scans           Scan[]
+  priceComps      PriceComp[]
+  collectionItems CollectionItem[]
+  watchlistItems  WatchlistItem[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([sport])
+  @@index([playerName])
+  @@index([team])
+  @@index([year])
+}
+
+model Scan {
+  id              String     @id @default(cuid())
+  userId          String?
+  cardId          String?
+  status          ScanStatus @default(REVIEW)
+  imageMimeType   String
+  imageByteSize   Int
+  imageHash       String?
+  backImageMimeType String?
+  backImageByteSize Int?
+  backImageHash     String?
+  detectedSport   Sport?
+  extractedJson   Json
+  conditionNotes  Json?
+  confidenceScore Float
+  errorMessage    String?
+  user            User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  card            Card?      @relation(fields: [cardId], references: [id], onDelete: SetNull)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([detectedSport])
+  @@index([createdAt])
+}
+
+model MarketplaceSource {
+  id             String          @id @default(cuid())
+  name           String          @unique
+  websiteUrl     String?
+  apiBaseUrl     String?
+  supportsSold   Boolean         @default(false)
+  supportsActive Boolean         @default(false)
+  affiliateReady Boolean         @default(false)
+  priceComps     PriceComp[]
+  spotlightItems SpotlightItem[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model PriceComp {
+  id             String             @id @default(cuid())
+  cardId         String
+  sourceId       String?
+  listingKind    ListingKind        @default(SOLD_COMP)
+  title          String
+  salePriceCents Int
+  currency       String             @default("USD")
+  soldAt         DateTime?
+  listingUrl     String?
+  condition      String?
+  gradeCompany   String?
+  gradeValue     String?
+  isDemo         Boolean            @default(false)
+  card           Card               @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  source         MarketplaceSource? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  createdAt      DateTime           @default(now())
+
+  @@index([cardId, soldAt])
+  @@index([listingKind])
+}
+
+model CollectionItem {
+  id                  String           @id @default(cuid())
+  userId              String
+  cardId              String
+  purchasePriceCents  Int?
+  estimatedValueCents Int?
+  condition           String?
+  notes               String?
+  status              CollectionStatus @default(RAW)
+  acquiredAt          DateTime?
+  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  card                Card             @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+model SpotlightItem {
+  id                     String             @id @default(cuid())
+  sourceId               String?
+  category               String
+  sport                  Sport
+  playerName             String
+  year                   Int?
+  brand                  String?
+  setName                String?
+  parallel               String?
+  askingPriceCents       Int
+  recentAverageSoldCents Int?
+  estimatedUpsideCents   Int?
+  listingUrl             String
+  externalListingId      String?
+  confidenceScore        Float
+  reason                 String
+  isActive               Boolean            @default(true)
+  source                 MarketplaceSource? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  watchlistItems         WatchlistItem[]
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  @@index([sport])
+  @@index([category])
+  @@index([isActive])
+}
+
+model WatchlistItem {
+  id              String         @id @default(cuid())
+  userId          String
+  cardId          String?
+  spotlightItemId String?
+  notes           String?
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  card            Card?          @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  spotlightItem   SpotlightItem? @relation(fields: [spotlightItemId], references: [id], onDelete: Cascade)
+  createdAt       DateTime       @default(now())
+
+  @@index([userId])
+}
