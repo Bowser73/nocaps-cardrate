@@ -1,7 +1,7 @@
 import { buildCardQuery } from "@/lib/card-normalize";
 import { dollarsToCents } from "@/lib/money";
 import { providerSourceLabels } from "@/lib/providers/labels";
-import type { DealSearchCard, ActiveListing } from "@/lib/deals/types";
+import type { DealSearchCard, ActiveListing, ActiveListingSearchResult } from "@/lib/deals/types";
 
 type EbayTokenResponse = {
   access_token?: string;
@@ -65,8 +65,13 @@ export async function getEbayActiveListings(card: DealSearchCard): Promise<Activ
 }
 
 export async function searchEbayActiveListings(query: string, limit = 24): Promise<ActiveListing[]> {
+  const result = await searchEbayActiveListingsWithDebug(query, limit);
+  return result.listings;
+}
+
+export async function searchEbayActiveListingsWithDebug(query: string, limit = 24): Promise<ActiveListingSearchResult> {
   const token = await getEbayAccessToken();
-  if (!token) return [];
+  if (!token) return { listings: [], rawCount: 0, sampleTitles: [] };
 
   const params = new URLSearchParams({
     q: query,
@@ -84,10 +89,14 @@ export async function searchEbayActiveListings(query: string, limit = 24): Promi
     next: { revalidate: 600 }
   });
 
-  if (!response.ok) return [];
+  if (!response.ok) return { listings: [], rawCount: 0, sampleTitles: [] };
   const data = (await response.json()) as { itemSummaries?: EbayBrowseItem[] };
+  const rawItems = data.itemSummaries ?? [];
+  const sampleTitles = rawItems.slice(0, 3).map((item) => item.title ?? "Untitled eBay listing");
+  console.log("[Market Gallery] raw eBay active listing count", { query, rawCount: rawItems.length });
+  console.log("[Market Gallery] first raw eBay active listing titles", sampleTitles);
 
-  return (data.itemSummaries ?? [])
+  const listings = rawItems
     .map((item) => ({
       title: item.title ?? "Active card listing",
       askingPriceCents: dollarsToCents(Number(item.price?.value ?? 0)),
@@ -102,6 +111,7 @@ export async function searchEbayActiveListings(query: string, limit = 24): Promi
       listedAt: item.itemCreationDate ?? null
     }))
     .filter((item) => item.askingPriceCents > 0 && item.listingUrl);
+  return { listings, rawCount: rawItems.length, sampleTitles };
 }
 
 export function isDealFinderConnected() {

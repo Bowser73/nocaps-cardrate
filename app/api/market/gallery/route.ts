@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { searchEbayActiveListings, isDealFinderConnected } from "@/lib/deals/ebay-active";
+import { searchEbayActiveListingsWithDebug, isDealFinderConnected } from "@/lib/deals/ebay-active";
 import {
   defaultMarketQueries,
   enrichMarketGalleryListings,
   getDemoMarketListings,
   isSportsTradingCardListing,
+  logMarketGalleryFilterCounts,
   shuffleMarketGalleryListings,
   toMarketGalleryListing
 } from "@/lib/market/gallery";
@@ -38,21 +39,25 @@ export async function GET(request: Request) {
   }
 
   const queries = query ? [query] : defaultMarketQueries;
-  const settledBatches = await Promise.allSettled(queries.map((term) => searchEbayActiveListings(term, query ? 36 : 10)));
+  const settledBatches = await Promise.allSettled(queries.map((term) => searchEbayActiveListingsWithDebug(term, query ? 36 : 10)));
   const batches = settledBatches
-    .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof searchEbayActiveListings>>> => result.status === "fulfilled")
+    .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof searchEbayActiveListingsWithDebug>>> => result.status === "fulfilled")
     .map((result) => result.value);
+  const rawCount = batches.reduce((sum, batch) => sum + batch.rawCount, 0);
+  const sampleTitles = batches.flatMap((batch) => batch.sampleTitles).slice(0, 3);
   const seen = new Set<string>();
-  const listings = shuffleMarketGalleryListings(enrichMarketGalleryListings(batches
-    .flat()
+  const mappedListings = batches
+    .flatMap((batch) => batch.listings)
     .filter((listing) => {
       const key = listing.itemId ?? listing.listingUrl;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     })
-    .map(toMarketGalleryListing)
-    .filter((listing) => isSportsTradingCardListing(listing, { premiumDefault: !query }))))
+    .map(toMarketGalleryListing);
+  const filteredListings = mappedListings.filter((listing) => isSportsTradingCardListing(listing, { premiumDefault: !query }));
+  logMarketGalleryFilterCounts(query ?? "default market feed", mappedListings.length, filteredListings.length);
+  const listings = shuffleMarketGalleryListings(enrichMarketGalleryListings(filteredListings))
     .slice(0, 60);
 
   const failedCount = settledBatches.filter((result) => result.status === "rejected").length;
@@ -67,6 +72,9 @@ export async function GET(request: Request) {
       : allQueriesFailed
         ? "Live marketplace search failed. Retry in a moment."
         : "No active listings returned.",
-    listings
+    listings,
+    rawCount,
+    filteredCount: listings.length,
+    sampleTitles
   });
 }

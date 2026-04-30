@@ -24,7 +24,6 @@ import {
   PlugZap,
   Search,
   ShieldCheck,
-  SlidersHorizontal,
   Sparkles,
   Target,
   TrendingUp,
@@ -43,7 +42,20 @@ const noRationaleText = "No grading rationale provided.";
 const isLocalDevPro = process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_DEV_PRO === "true";
 const isDevelopmentMode = process.env.NODE_ENV !== "production";
 const defaultMarketGalleryQueries = [
-  "C.J. Stroud rookie card"
+  "CJ Stroud rookie card",
+  "football rookie card PSA",
+  "basketball rookie card PSA",
+  "baseball rookie card PSA",
+  "Topps Chrome rookie card",
+  "Panini Prizm rookie card"
+];
+const fallbackMarketGalleryQueries = [
+  "CJ Stroud rookie card",
+  "football rookie card PSA",
+  "basketball rookie card PSA",
+  "baseball rookie card PSA",
+  "Topps Chrome rookie card",
+  "Panini Prizm rookie card"
 ];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -176,6 +188,12 @@ type ActiveAskingListing = Pick<MarketGalleryListing, "id" | "title" | "listedPr
 type DiagnosticsState = {
   lastMarketRequest: string;
   lastMarketResponseCount: number | null;
+  lastMarketRawCount: number | null;
+  lastMarketFilteredCount: number | null;
+  lastMarketSampleTitles: string[];
+  defaultFeedLoaded: boolean;
+  defaultFeedResultCount: number;
+  lastDefaultQuery: string;
   lastMarketError: string;
   lastPricingQuery: string;
   rawSoldCompsReturned: number | null;
@@ -186,6 +204,7 @@ type DiagnosticsState = {
 
 type MarketFilter = "All" | "Football" | "Baseball" | "Basketball" | "Graded" | "Autos" | "Numbered";
 type MarketSort = "Best Match" | "Highest Price" | "Lowest Price" | "Newly Listed" | "Premium First";
+type SharedSportFilter = "all" | "football" | "baseball" | "basketball";
 
 type FlipRecord = {
   id: string;
@@ -272,7 +291,7 @@ export function CardRateApp() {
   const [activeAsks, setActiveAsks] = useState<ActiveAskingListing[]>([]);
   const [activeAsksLoading, setActiveAsksLoading] = useState(false);
   const [collection, setCollection] = useState<CollectionResponse | null>(null);
-  const [sportFilter, setSportFilter] = useState("ALL");
+  const [activeSportFilter, setActiveSportFilter] = useState<SharedSportFilter>("all");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -285,7 +304,7 @@ export function CardRateApp() {
   const [dealMessage, setDealMessage] = useState("Live deal finder not connected yet.");
   const [flips, setFlips] = useState<FlipRecord[]>([]);
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
-  const [demoMode, setDemoMode] = useState(false);
+  const [demoMode] = useState(false);
   const [manualComps, setManualComps] = useState<ManualComp[]>([]);
   const [manualListing, setManualListing] = useState<ManualActiveListing>({ url: "", askingPrice: 0 });
   const isProUser = isLocalDevPro;
@@ -295,6 +314,8 @@ export function CardRateApp() {
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketHasLoaded, setMarketHasLoaded] = useState(false);
   const [marketSearch, setMarketSearch] = useState("");
+  const [marketFeedLabel, setMarketFeedLabel] = useState("Default Market Feed");
+  const [defaultMarketListings, setDefaultMarketListings] = useState<MarketGalleryListing[]>([]);
   const [marketFilter, setMarketFilter] = useState<MarketFilter>("All");
   const [marketSort, setMarketSort] = useState<MarketSort>("Best Match");
   const [marketDemoMode, setMarketDemoMode] = useState(false);
@@ -302,6 +323,12 @@ export function CardRateApp() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsState>({
     lastMarketRequest: "",
     lastMarketResponseCount: null,
+    lastMarketRawCount: null,
+    lastMarketFilteredCount: null,
+    lastMarketSampleTitles: [],
+    defaultFeedLoaded: false,
+    defaultFeedResultCount: 0,
+    lastDefaultQuery: "",
     lastMarketError: "",
     lastPricingQuery: "",
     rawSoldCompsReturned: null,
@@ -318,14 +345,14 @@ export function CardRateApp() {
 
   useEffect(() => {
     void loadCollection();
-  }, [sportFilter, search]);
+  }, [activeSportFilter, search]);
 
   useEffect(() => {
     void loadStatus();
   }, []);
 
   useEffect(() => {
-    if (activeTab === "market" && !marketGalleryLoadedRef.current && !marketGalleryLoadingRef.current) {
+    if ((activeTab === "dashboard" || activeTab === "market") && !marketGalleryLoadedRef.current && !marketGalleryLoadingRef.current) {
       marketGalleryLoadedRef.current = true;
       void loadMarketGallery("", marketDemoMode, true);
     }
@@ -392,7 +419,8 @@ export function CardRateApp() {
 
   async function loadCollection() {
     const params = new URLSearchParams();
-    if (sportFilter !== "ALL") params.set("sport", sportFilter);
+    const apiSport = sharedSportFilterToApiSport(activeSportFilter);
+    if (apiSport) params.set("sport", apiSport);
     if (search) params.set("search", search);
     const response = await fetch(`/api/collection?${params}`);
     setCollection(await response.json());
@@ -690,6 +718,7 @@ export function CardRateApp() {
 
   async function loadMarketGallery(search = marketSearch, demo = marketDemoMode, force = false) {
     const normalizedSearch = search.trim();
+    const exactSearchRequested = Boolean(normalizedSearch);
     if (marketGalleryLoadingRef.current) {
       if (normalizedSearch) {
         marketGalleryQueueRef.current += 1;
@@ -707,19 +736,21 @@ export function CardRateApp() {
     setBusy("market");
     if (marketListings.length === 0) setMarketMessage("Loading live marketplace listings...");
     try {
-      const queries = normalizedSearch ? [toPlayerMarketQuery(normalizedSearch)] : defaultMarketGalleryQueries;
+      const queries = normalizedSearch ? [toPlayerMarketQuery(normalizedSearch)] : [""];
       let failedRequests = 0;
       let rateLimited = false;
+      let usedFallbackSearch = false;
       const batches: Array<{ message: string | null | undefined; status: string | undefined; listings: MarketGalleryListing[] }> = [];
       for (const query of queries) {
         if (queueId !== marketGalleryQueueRef.current) break;
         try {
-          const cacheKey = `${demo ? "demo" : "live"}:${query}`;
+          const cacheKey = `${demo ? "demo" : "live"}:${query || "default-feed"}`;
           let queryListings = marketGalleryCacheRef.current.get(cacheKey);
           let queryMessage: string | null | undefined = null;
           let queryStatus: string | undefined = "CACHED";
           if (!queryListings) {
-            const params = new URLSearchParams({ q: query });
+            const params = new URLSearchParams();
+            if (query) params.set("q", query);
             if (demo) params.set("demoMode", "true");
             const requestUrl = `/api/market/gallery?${params}`;
             setDiagnostics((current) => ({
@@ -758,6 +789,9 @@ export function CardRateApp() {
               setDiagnostics((current) => ({
                 ...current,
                 lastMarketResponseCount: queryListings?.length ?? 0,
+                lastMarketRawCount: typeof data.rawCount === "number" ? data.rawCount : current.lastMarketRawCount,
+                lastMarketFilteredCount: typeof data.filteredCount === "number" ? data.filteredCount : queryListings?.length ?? 0,
+                lastMarketSampleTitles: Array.isArray(data.sampleTitles) ? data.sampleTitles.slice(0, 3).map(String) : current.lastMarketSampleTitles,
                 lastMarketError: ""
               }));
               marketGalleryCacheRef.current.set(cacheKey, queryListings);
@@ -769,6 +803,7 @@ export function CardRateApp() {
               ...current,
               lastMarketRequest: `${demo ? "demo" : "live"}:${query} (cache)`,
               lastMarketResponseCount: queryListings?.length ?? 0,
+              lastMarketFilteredCount: queryListings?.length ?? 0,
               lastMarketError: ""
             }));
           }
@@ -785,20 +820,114 @@ export function CardRateApp() {
           }));
           batches.push({ message: null, status: "ERROR", listings: [] });
         }
-        if (!normalizedSearch && query !== queries[queries.length - 1]) await sleep(800);
+          if (!normalizedSearch && query !== queries[queries.length - 1]) await sleep(800);
+      }
+      if (exactSearchRequested && !rateLimited && batches.flatMap((batch) => batch.listings).length === 0 && failedRequests < queries.length) {
+        usedFallbackSearch = true;
+        for (const query of fallbackMarketGalleryQueries) {
+          if (queueId !== marketGalleryQueueRef.current) break;
+          try {
+            const cacheKey = `${demo ? "demo" : "live"}:${query}`;
+            let queryListings = marketGalleryCacheRef.current.get(cacheKey);
+            let queryMessage: string | null | undefined = null;
+            let queryStatus: string | undefined = "CACHED";
+            if (!queryListings) {
+              const params = new URLSearchParams({ q: query });
+              if (demo) params.set("demoMode", "true");
+              const requestUrl = `/api/market/gallery?${params}`;
+              setDiagnostics((current) => ({
+                ...current,
+                lastMarketRequest: requestUrl,
+                lastMarketError: "",
+                rateLimitHit: false
+              }));
+              const response = await fetch(requestUrl);
+              const data = await response.json().catch(() => ({}));
+              const errorMessage = data.error ?? data.message ?? "";
+              if (!response.ok || String(errorMessage).toLowerCase().includes("too many market searches")) {
+                if (String(errorMessage).toLowerCase().includes("too many market searches")) {
+                  rateLimited = true;
+                  setMarketMessage("Market search limit reached. Showing available results. Try again in a minute.");
+                  setMarketRetryLockedUntil(Date.now() + 5000);
+                  setTimeout(() => setMarketRetryLockedUntil(0), 5000);
+                  setDiagnostics((current) => ({
+                    ...current,
+                    lastMarketError: "Market search limit reached. Showing available results. Try again in a minute.",
+                    rateLimitHit: true
+                  }));
+                  break;
+                }
+                failedRequests += 1;
+                console.warn("Market Gallery fallback query warning", query, errorMessage || response.statusText);
+                queryListings = [];
+                queryMessage = "Some broader market searches could not load.";
+                queryStatus = "ERROR";
+              } else {
+                queryListings = ((data.listings ?? []) as MarketGalleryListing[]).filter((listing) => isQualityMarketListing(listing, { defaultFeed: true }));
+                setDiagnostics((current) => ({
+                  ...current,
+                  lastMarketResponseCount: queryListings?.length ?? 0,
+                  lastMarketRawCount: typeof data.rawCount === "number" ? data.rawCount : current.lastMarketRawCount,
+                  lastMarketFilteredCount: typeof data.filteredCount === "number" ? data.filteredCount : queryListings?.length ?? 0,
+                  lastMarketSampleTitles: Array.isArray(data.sampleTitles) ? data.sampleTitles.slice(0, 3).map(String) : current.lastMarketSampleTitles,
+                  lastMarketError: ""
+                }));
+                marketGalleryCacheRef.current.set(cacheKey, queryListings);
+                queryMessage = data.message as string | null | undefined;
+                queryStatus = data.status as string | undefined;
+              }
+            }
+            batches.push({ message: queryMessage, status: queryStatus, listings: queryListings ?? [] });
+            const fallbackListings = mergeMarketListings(batches.flatMap((batch) => batch.listings));
+            if (fallbackListings.length > 0) setMarketListings(fallbackListings);
+          } catch (error) {
+            failedRequests += 1;
+            console.warn("Market Gallery fallback query warning", query, error);
+            batches.push({ message: null, status: "ERROR", listings: [] });
+          }
+          if (query !== fallbackMarketGalleryQueries[fallbackMarketGalleryQueries.length - 1]) await sleep(800);
+        }
       }
       const nextBatchListings = batches.flatMap((batch) => batch.listings);
       const mergedListings = mergeMarketListings(normalizedSearch ? nextBatchListings : [...marketListings, ...nextBatchListings]).slice(0, 60);
       console.log("Market Gallery listings returned", mergedListings.length);
-      setMarketListings(mergedListings);
+      if (exactSearchRequested && mergedListings.length === 0 && defaultMarketListings.length > 0) {
+        setMarketListings(defaultMarketListings);
+      } else {
+        setMarketListings(mergedListings);
+      }
+      if (!exactSearchRequested && mergedListings.length > 0) {
+        setDefaultMarketListings(mergedListings);
+      }
+      if (!exactSearchRequested) {
+        setDiagnostics((current) => ({
+          ...current,
+          defaultFeedLoaded: true,
+          defaultFeedResultCount: mergedListings.length,
+          lastDefaultQuery: "Default query pool"
+        }));
+      }
       const firstMessage = batches.find((batch) => batch.message)?.message ?? "";
       if (rateLimited) {
         setMarketMessage("Market search limit reached. Showing available results. Try again in a minute.");
+        setMarketFeedLabel(defaultMarketListings.length > 0 ? "Default Market Feed" : exactSearchRequested ? "Search Results" : "Default Market Feed");
       } else if (mergedListings.length === 0 && failedRequests === queries.length) {
         setMarketError("Unable to load marketplace listings. Try again.");
         setMarketMessage("Unable to load marketplace listings. Try again.");
+        setMarketFeedLabel(defaultMarketListings.length > 0 ? "Default Market Feed" : exactSearchRequested ? "Search Results" : "Default Market Feed");
+      } else if (mergedListings.length === 0) {
+        setMarketMessage(defaultMarketListings.length > 0
+          ? "No active listings found for this exact search. Showing the last successful default feed."
+          : exactSearchRequested
+            ? "No active listings found for this exact search. Try a broader search or scan another card."
+            : "No default market listings found. Try a player search.");
+        setMarketFeedLabel(defaultMarketListings.length > 0 ? "Default Market Feed" : exactSearchRequested ? "Search Results" : "Default Market Feed");
+      } else if (usedFallbackSearch) {
+        setMarketMessage("No active listings found for this exact search. Showing broader market results instead.");
+        setMarketFeedLabel("Search Results");
       } else {
-        setMarketMessage(firstMessage);
+        setMarketMessage(firstMessage || (exactSearchRequested ? "Search Results from eBay Active Listings." : "Default Market Feed from eBay Active Listings."));
+        setMarketFeedLabel(exactSearchRequested ? "Search Results" : "Default Market Feed");
       }
       setMarketHasLoaded(true);
     } catch (error) {
@@ -879,12 +1008,11 @@ export function CardRateApp() {
       <section className="px-4 pb-5 pt-4 sm:px-6">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">NoCaps CardRate</p>
-            <h1 className="mt-1 text-3xl font-black text-white">Portfolio Command</h1>
+            <h1 className="text-2xl font-black text-white">NoCaps CardRate</h1>
             <p className="mt-1 text-xs font-semibold text-slate-400">A NoCapsAI product</p>
           </div>
-          <div className="flex h-12 w-12 items-center justify-center rounded-md bg-emerald-400 text-[#070A12] shadow-lift">
-            <Sparkles className="h-6 w-6" aria-hidden="true" />
+          <div className="flex h-12 w-12 items-center justify-end">
+            <img src="/assets/logo.png" alt="NoCapsAI logo" className="h-10 w-10 rounded-md object-contain" />
           </div>
         </div>
         <div className="mt-5 grid grid-cols-3 gap-2">
@@ -893,11 +1021,12 @@ export function CardRateApp() {
           <DarkMetric label="Sports" value={sportCount} />
         </div>
         <TabNav activeTab={activeTab} onChange={setActiveTab} />
+        <SharedSportFilterChips active={activeSportFilter} onChange={setActiveSportFilter} />
       </section>
 
       {activeTab === "dashboard" && (
       <section className="px-4 sm:px-6">
-        <DashboardPanel collection={collection} flips={flips} finds={dealFinds} marketListings={marketListings} marketLoading={!marketHasLoaded || marketLoading} marketMessage={marketMessage} isProUser={isProUser} onOpenDeals={() => setActiveTab("market")} onScan={() => setActiveTab("scan")} onAddFlip={addFlip} />
+        <DashboardPanel collection={collection} flips={flips} finds={dealFinds} marketListings={marketListings} marketLoading={!marketHasLoaded || marketLoading} marketMessage={marketMessage} marketFeedLabel={marketFeedLabel} activeSportFilter={activeSportFilter} isProUser={isProUser} onOpenDeals={() => setActiveTab("market")} onScan={() => setActiveTab("scan")} onAddFlip={addFlip} />
       </section>
       )}
 
@@ -1041,9 +1170,6 @@ export function CardRateApp() {
         />
       </section>
       <section className="mt-5 px-4 sm:px-6">
-        <ConnectionPanel status={appStatus} demoMode={demoMode} onToggleDemo={setDemoMode} />
-      </section>
-      <section className="mt-5 px-4 sm:px-6">
         <ProfitEstimator
           title="Reviewed card profit"
           defaultPurchasePrice={purchasePrice}
@@ -1060,13 +1186,12 @@ export function CardRateApp() {
 
       {activeTab === "collection" && (
       <section className="px-4 sm:px-6">
-        <CollectionPanel collection={collection} sportFilter={sportFilter} setSportFilter={setSportFilter} search={search} setSearch={setSearch} onAddFlip={addFlip} onExport={exportCollectionCsv} />
+        <CollectionPanel collection={collection} activeSportFilter={activeSportFilter} search={search} setSearch={setSearch} onAddFlip={addFlip} onExport={exportCollectionCsv} />
       </section>
       )}
 
       {activeTab === "deals" && (
       <section className="px-4 sm:px-6">
-        <ConnectionPanel status={appStatus} demoMode={demoMode} onToggleDemo={setDemoMode} />
         <div className="mt-5">
           <ManualCompsPanel comps={manualComps} estimate={manualEstimate} onAdd={addManualComp} onRemove={(id) => setManualComps((current) => current.filter((comp) => comp.id !== id))} />
         </div>
@@ -1074,26 +1199,27 @@ export function CardRateApp() {
           <ManualListingPanel listing={manualListing} onChange={setManualListing} deal={manualDeal} onAddFlip={(record) => addFlip(record)} />
         </div>
         <div className="mt-5">
-        <UndervaluedFindsPanel finds={dealFinds} message={dealMessage} loading={busy === "deals"} sort={dealSort} onSort={setDealSort} onRefresh={() => void loadDeals()} onAddFlip={addFlip} />
+        <UndervaluedFindsPanel finds={dealFinds} message={dealMessage} loading={busy === "deals"} sort={dealSort} activeSportFilter={activeSportFilter} onSort={setDealSort} onRefresh={() => void loadDeals()} onAddFlip={addFlip} />
         </div>
       </section>
       )}
 
       {activeTab === "flips" && (
       <section className="px-4 sm:px-6">
-        <FlipTrackerPanel flips={flips} onUpdate={updateFlip} onAdd={addFlip} onExport={exportFlipsCsv} />
+        <FlipTrackerPanel flips={flips} activeSportFilter={activeSportFilter} onUpdate={updateFlip} onAdd={addFlip} onExport={exportFlipsCsv} />
       </section>
       )}
 
       {activeTab === "market" && (
       <section className="px-4 sm:px-6">
-        <ConnectionPanel status={appStatus} demoMode={demoMode} onToggleDemo={setDemoMode} />
         <div className="mt-5">
           <MarketGalleryPanel
             listings={marketListings}
             message={marketError ?? marketMessage}
             error={marketError}
             loading={!marketHasLoaded || marketLoading}
+            feedLabel={marketFeedLabel}
+            activeSportFilter={activeSportFilter}
             search={marketSearch}
             filter={marketFilter}
             sort={marketSort}
@@ -1112,49 +1238,24 @@ export function CardRateApp() {
               void loadMarketGallery(marketSearch, marketDemoMode, true);
             }}
             onSearch={() => void loadMarketGallery(marketSearch, marketDemoMode, true)}
+            onTryBroader={() => {
+              setMarketSearch("");
+              void loadMarketGallery("", marketDemoMode, true);
+            }}
+            onSuggestedSearch={(query) => {
+              setMarketSearch(query);
+              void loadMarketGallery(query, marketDemoMode, true);
+            }}
             onAddFlip={addFlip}
           />
         </div>
       </section>
       )}
 
-      {isDevelopmentMode && (
-        <section className="mt-5 px-4 sm:px-6">
-          <DataSourcesStatusPanel status={appStatus} />
-          <div className="mt-5">
-          <DataDiagnosticsPanel status={appStatus} diagnostics={diagnostics} />
-          </div>
-        </section>
-      )}
-
       <section className="mt-5 px-4 sm:px-6">
         <Disclaimer />
       </section>
     </main>
-  );
-}
-
-function DataDiagnosticsPanel({ status, diagnostics }: { status: AppStatus | null; diagnostics: DiagnosticsState }) {
-  return (
-    <div className="rounded-md border border-sky-300/20 bg-sky-300/10 p-3 shadow-lift">
-      <div className="flex items-center gap-2">
-        <CircleAlert className="h-4 w-4 text-sky-200" aria-hidden="true" />
-        <h2 className="text-sm font-black text-sky-100">Development Data Diagnostics</h2>
-      </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <DiagnosticItem label="eBay connection status" value={status?.ebay.status ?? "Unknown"} />
-        <DiagnosticItem label="EBAY_CLIENT_ID present" value={status?.ebay.hasClientId ? "yes" : "no"} />
-        <DiagnosticItem label="EBAY_CLIENT_SECRET present" value={status?.ebay.hasClientSecret ? "yes" : "no"} />
-        <DiagnosticItem label="Last Market request" value={diagnostics.lastMarketRequest || "None yet"} />
-        <DiagnosticItem label="Last Market response count" value={diagnostics.lastMarketResponseCount ?? "None yet"} />
-        <DiagnosticItem label="Last Market error" value={diagnostics.lastMarketError || "None"} />
-        <DiagnosticItem label="Last pricing query" value={diagnostics.lastPricingQuery || "None yet"} />
-        <DiagnosticItem label="Raw sold comps returned" value={diagnostics.rawSoldCompsReturned ?? "None yet"} />
-        <DiagnosticItem label="Usable sold comps" value={diagnostics.usableSoldComps ?? "None yet"} />
-        <DiagnosticItem label="Last pricing error" value={diagnostics.lastPricingError || "None"} />
-        <DiagnosticItem label="Rate limit hit" value={diagnostics.rateLimitHit ? "yes" : "no"} />
-      </div>
-    </div>
   );
 }
 
@@ -1300,6 +1401,10 @@ function bytesToMb(bytes: number) {
   return (bytes / 1024 / 1024).toFixed(1);
 }
 
+function formatValueOrPending(cents?: number | null) {
+  return cents && cents > 0 ? formatMoney(cents) : "Pricing pending";
+}
+
 function DashboardPanel({
   collection,
   flips,
@@ -1307,6 +1412,8 @@ function DashboardPanel({
   marketListings,
   marketLoading,
   marketMessage,
+  marketFeedLabel,
+  activeSportFilter,
   isProUser,
   onOpenDeals,
   onScan,
@@ -1318,6 +1425,8 @@ function DashboardPanel({
   marketListings: MarketGalleryListing[];
   marketLoading: boolean;
   marketMessage: string;
+  marketFeedLabel: string;
+  activeSportFilter: SharedSportFilter;
   isProUser: boolean;
   onOpenDeals: () => void;
   onScan: () => void;
@@ -1325,21 +1434,24 @@ function DashboardPanel({
 }) {
   const items = collection?.items ?? [];
   const totalValue = collection?.summary.totalValueCents ?? 0;
-  const totalInvested = flips.reduce((sum, flip) => sum + flip.purchasePrice, 0);
-  const soldFlips = flips.filter((flip) => flip.status === "Sold");
+  const filteredFinds = finds.filter((find) => dealMatchesSharedSport(find, activeSportFilter));
+  const filteredFlips = flips.filter((flip) => flipMatchesSharedSport(flip, activeSportFilter));
+  const filteredMarketListings = marketListings.filter((listing) => listingMatchesSharedSport(listing, activeSportFilter));
+  const totalInvested = filteredFlips.reduce((sum, flip) => sum + flip.purchasePrice, 0);
+  const soldFlips = filteredFlips.filter((flip) => flip.status === "Sold");
   const realizedProfit = soldFlips.reduce((sum, flip) => sum + flip.soldPrice - flip.purchasePrice, 0);
-  const projectedValue = flips.reduce((sum, flip) => sum + (flip.listedPrice || flip.soldPrice), 0);
+  const projectedValue = filteredFlips.reduce((sum, flip) => sum + (flip.listedPrice || flip.soldPrice), 0);
   const purchaseBasisCents = items.reduce((sum, item) => sum + (item.purchasePriceCents ?? 0), 0) + Math.round(totalInvested * 100);
   const unrealizedProfitCents = purchaseBasisCents > 0 ? totalValue + Math.round(projectedValue * 100) - purchaseBasisCents : null;
   const dailyChange = 0;
   const weeklyChange = 0;
   const mostValuable = collection?.summary.highestValueCards ?? [];
   const recent = [
-    ...items.slice(0, 3).map((item) => ({ label: "Saved card", title: item.card.playerName, detail: formatMoney(item.estimatedValueCents) })),
-    ...flips.slice(0, 3).map((flip) => ({ label: flip.status, title: flip.player, detail: flip.cardSummary || "Flip tracked" }))
+    ...items.slice(0, 3).map((item) => ({ label: "Saved card", title: item.card.playerName, detail: formatValueOrPending(item.estimatedValueCents) })),
+    ...filteredFlips.slice(0, 3).map((flip) => ({ label: flip.status, title: flip.player, detail: flip.cardSummary || "Flip tracked" }))
   ].slice(0, 5);
   const sportTotals = Object.entries(collection?.summary.sportTotals ?? {}).sort((a, b) => b[1] - a[1]);
-  const topDeals = [...finds].sort((a, b) => b.flipScore - a.flipScore).slice(0, 3);
+  const topDeals = [...filteredFinds].sort((a, b) => b.flipScore - a.flipScore).slice(0, 3);
   const gainers = topDeals.filter((deal) => (deal.estimatedUpsideCents ?? 0) > 0);
   const losers = [...items]
     .filter((item) => item.purchasePriceCents != null && item.estimatedValueCents != null && (item.estimatedValueCents ?? 0) < (item.purchasePriceCents ?? 0))
@@ -1353,7 +1465,6 @@ function DashboardPanel({
           <div>
             <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-300">NoCaps CardRate</p>
             <p className="mt-1 text-xs font-semibold text-slate-400">A NoCapsAI product</p>
-            <h2 className="mt-1 text-2xl font-black text-white">Track value, flips, comps, and market opportunities.</h2>
           </div>
           <button type="button" onClick={onScan} className="flex h-11 items-center justify-center gap-2 rounded-md bg-emerald-400 px-4 text-sm font-black text-[#070A12] shadow-lift transition hover:bg-emerald-300">
             <Camera className="h-4 w-4" aria-hidden="true" />
@@ -1371,17 +1482,18 @@ function DashboardPanel({
           </div>
           <ProBadge isProUser={isProUser} />
         </div>
-        <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-5">
+          <PremiumMetric label="Collection" title="Saved Cards" value={items.length} icon={<ListChecks className="h-4 w-4" />} />
           <PremiumMetric label="Holdings" title="Invested" value={formatMoney(purchaseBasisCents)} icon={<Database className="h-4 w-4" />} />
           <PremiumMetric label="Projected" title="Unrealized P/L" value={unrealizedProfitCents == null ? "Needs basis" : formatMoney(unrealizedProfitCents)} tone={unrealizedProfitCents == null ? undefined : unrealizedProfitCents >= 0 ? "gain" : "loss"} icon={<TrendingUp className="h-4 w-4" />} />
           <PremiumMetric label="Realized" title="Closed P/L" value={formatMoney(Math.round(realizedProfit * 100))} tone={realizedProfit >= 0 ? "gain" : "loss"} icon={<BadgeDollarSign className="h-4 w-4" />} />
-          <PremiumMetric label="Active" title="Flips" value={flips.filter((flip) => !["Sold", "Passed"].includes(flip.status)).length} icon={<Target className="h-4 w-4" />} />
+          <PremiumMetric label="Active" title="Flips" value={filteredFlips.filter((flip) => !["Sold", "Passed"].includes(flip.status)).length} icon={<Target className="h-4 w-4" />} />
         </div>
       </section>
 
       <PortfolioTrendCard />
 
-      <MarketSpotlightSection listings={getPremiumMarketListings(marketListings).slice(0, 6)} loading={marketLoading} message={marketMessage} onOpenDeals={onOpenDeals} onAddFlip={onAddFlip} />
+      <MarketSpotlightSection listings={getPremiumMarketListings(filteredMarketListings).slice(0, 6)} loading={marketLoading} message={marketMessage} feedLabel={marketFeedLabel} activeSportFilter={activeSportFilter} onOpenDeals={onOpenDeals} onAddFlip={onAddFlip} />
 
       <section className="grid gap-4 md:grid-cols-2">
         <PremiumBlock title="Top Gainers" icon={<ArrowUpRight className="h-4 w-4" />}>
@@ -1417,7 +1529,7 @@ function DashboardPanel({
                 <p className="font-black text-white">{item.card.playerName}</p>
                 <p className="text-xs font-semibold text-slate-400">{[item.card.year, item.card.brand, item.card.setName].filter(Boolean).join(" - ")}</p>
               </div>
-              <p className="font-black text-emerald-300">{formatMoney(item.estimatedValueCents)}</p>
+              <p className="font-black text-emerald-300">{formatValueOrPending(item.estimatedValueCents)}</p>
             </div>
           ))
         )}
@@ -1577,12 +1689,16 @@ function MarketSpotlightSection({
   listings,
   loading,
   message,
+  feedLabel,
+  activeSportFilter,
   onOpenDeals,
   onAddFlip
 }: {
   listings: MarketGalleryListing[];
   loading: boolean;
   message: string;
+  feedLabel: string;
+  activeSportFilter: SharedSportFilter;
   onOpenDeals: () => void;
   onAddFlip: (record: Omit<FlipRecord, "id">) => void;
 }) {
@@ -1597,6 +1713,10 @@ function MarketSpotlightSection({
             <h3 className="text-sm font-black uppercase tracking-[0.14em]">Market Spotlight</h3>
           </div>
           <p className="mt-2 text-sm font-semibold text-slate-400">Live cards currently listed across the market.</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <span className="rounded-md bg-sky-300/10 px-2 py-1 text-xs font-black text-sky-200">Dashboard Spotlight from eBay Active Listings · {sharedSportFilterLabel(activeSportFilter)}</span>
+            <span className="rounded-md bg-white/8 px-2 py-1 text-xs font-black text-slate-300">{feedLabel}</span>
+          </div>
         </div>
         <button type="button" onClick={onOpenDeals} className="rounded-md bg-white/8 px-3 py-2 text-xs font-black text-slate-200 hover:bg-white/14">
           Open Market
@@ -1608,8 +1728,8 @@ function MarketSpotlightSection({
         </div>
       ) : listings.length === 0 ? (
         <div className="mt-4 rounded-md border border-dashed border-white/10 bg-black/20 p-4">
-          <p className="text-sm font-black text-white">{message || "Live marketplace not connected yet."}</p>
-          <p className="mt-1 text-xs font-semibold text-slate-400">Connect eBay credentials to automatically surface active card listings.</p>
+          <p className="text-sm font-black text-white">{sharedSportEmptyMessage(activeSportFilter, message || "No active listings found for this exact search.")}</p>
+          <p className="mt-1 text-xs font-semibold text-slate-400">Open Market to try broader searches like football rookie card, 2023 Prizm football, or Topps Chrome rookie.</p>
         </div>
       ) : (
         <div className="mt-4 flex gap-3 overflow-x-auto pb-2 md:grid md:grid-cols-2 lg:grid-cols-3">
@@ -1624,6 +1744,49 @@ function MarketSpotlightSection({
 
 function toPlayerMarketQuery(search: string) {
   return /\bsports?\s+card\b/i.test(search) ? search : `${search} sports card`;
+}
+
+function sharedSportFilterLabel(filter: SharedSportFilter) {
+  if (filter === "football") return "Football";
+  if (filter === "baseball") return "Baseball";
+  if (filter === "basketball") return "Basketball";
+  return "All Sports";
+}
+
+function sharedSportEmptyMessage(filter: SharedSportFilter, fallback: string) {
+  if (filter === "football") return "No football cards found in this view yet.";
+  if (filter === "baseball") return "No baseball cards found in this view yet.";
+  if (filter === "basketball") return "No basketball cards found in this view yet.";
+  return fallback;
+}
+
+function sharedSportFilterToApiSport(filter: SharedSportFilter) {
+  if (filter === "football") return "FOOTBALL";
+  if (filter === "baseball") return "BASEBALL";
+  if (filter === "basketball") return "BASKETBALL";
+  return null;
+}
+
+function listingMatchesSharedSport(listing: MarketGalleryListing, filter: SharedSportFilter) {
+  if (filter === "all") return true;
+  return listing.sport.toLowerCase() === filter || sportTextMatchesFilter(listing.title, filter);
+}
+
+function dealMatchesSharedSport(find: DealFind, filter: SharedSportFilter) {
+  if (filter === "all") return true;
+  return String(find.sport).toLowerCase() === filter || sportTextMatchesFilter(`${find.player} ${find.brandSet} ${find.listingTitle}`, filter);
+}
+
+function flipMatchesSharedSport(flip: FlipRecord, filter: SharedSportFilter) {
+  if (filter === "all") return true;
+  return sportTextMatchesFilter(`${flip.player} ${flip.cardSummary} ${flip.source} ${flip.notes}`, filter);
+}
+
+function sportTextMatchesFilter(text: string, filter: SharedSportFilter) {
+  if (filter === "football") return marketFootballPattern.test(text);
+  if (filter === "baseball") return marketBaseballPattern.test(text);
+  if (filter === "basketball") return marketBasketballPattern.test(text);
+  return true;
 }
 
 function mergeMarketListings(listings: MarketGalleryListing[]) {
@@ -1714,6 +1877,8 @@ function MarketGalleryPanel({
   message,
   error,
   loading,
+  feedLabel,
+  activeSportFilter,
   search,
   filter,
   sort,
@@ -1726,12 +1891,16 @@ function MarketGalleryPanel({
   onDemoMode,
   onRefresh,
   onSearch,
+  onTryBroader,
+  onSuggestedSearch,
   onAddFlip
 }: {
   listings: MarketGalleryListing[];
   message: string;
   error: string | null;
   loading: boolean;
+  feedLabel: string;
+  activeSportFilter: SharedSportFilter;
   search: string;
   filter: MarketFilter;
   sort: MarketSort;
@@ -1744,11 +1913,15 @@ function MarketGalleryPanel({
   onDemoMode: (value: boolean) => void;
   onRefresh: () => void;
   onSearch: () => void;
+  onTryBroader: () => void;
+  onSuggestedSearch: (query: string) => void;
   onAddFlip: (record: Omit<FlipRecord, "id">) => void;
 }) {
   const filters: MarketFilter[] = ["All", "Football", "Baseball", "Basketball", "Graded", "Autos", "Numbered"];
   const sorts: MarketSort[] = ["Best Match", "Highest Price", "Lowest Price", "Newly Listed", "Premium First"];
+  const suggestedSearches = ["football rookie card", "CJ Stroud rookie", "2023 Prizm football", "Topps Chrome rookie"];
   const visible = [...listings]
+    .filter((listing) => listingMatchesSharedSport(listing, activeSportFilter))
     .filter((listing) => matchesMarketFilter(listing, filter))
     .sort((a, b) => {
       if (sort === "Lowest Price") return a.listedPriceCents - b.listedPriceCents;
@@ -1765,6 +1938,7 @@ function MarketGalleryPanel({
           <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-300">Market Gallery</p>
           <h2 className="mt-1 text-2xl font-black text-white">Browse active trading card listings</h2>
           <p className="mt-2 text-sm font-semibold text-slate-400">Live {providerSourceLabels.ebayActiveListings} when connected. These are asking prices, not completed sales or verified values.</p>
+          <p className="mt-2 inline-flex rounded-md bg-sky-300/10 px-2 py-1 text-xs font-black text-sky-200">{feedLabel}</p>
         </div>
         <button type="button" onClick={onRefresh} disabled={loading || retryLocked} className="h-12 w-full rounded-md bg-emerald-400 px-4 text-sm font-black text-[#070A12] hover:bg-emerald-300 disabled:opacity-60 sm:w-auto">
           {loading ? "Loading" : retryLocked ? "Wait" : "Refresh"}
@@ -1805,9 +1979,25 @@ function MarketGalleryPanel({
         </div>
       ) : visible.length === 0 ? (
         <div className="mt-5 rounded-md border border-dashed border-white/10 bg-black/20 p-4">
-          <p className="text-sm font-black text-white">{message || "No active listings found for this card yet."}</p>
-          <p className="mt-1 text-xs font-semibold text-slate-400">If eBay connection failed, check credentials and retry.</p>
-          <button type="button" onClick={onRefresh} disabled={retryLocked} className="mt-3 h-12 w-full rounded-md bg-emerald-400 px-4 text-sm font-black text-[#070A12] transition hover:bg-emerald-300 disabled:opacity-60 sm:w-auto">{retryLocked ? "Try again soon" : "Retry"}</button>
+          <p className="text-sm font-black text-white">{sharedSportEmptyMessage(activeSportFilter, message || "No active listings found for this exact search. Try a broader search or scan another card.")}</p>
+          <p className="mt-1 text-xs font-semibold text-slate-400">eBay is connected, but this query returned no usable sports-card listings after filtering.</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {suggestedSearches.map((query) => (
+              <button
+                key={query}
+                type="button"
+                onClick={() => onSuggestedSearch(query)}
+                disabled={retryLocked}
+                className="h-10 rounded-full border border-white/10 bg-white/8 px-3 text-xs font-black text-slate-200 transition hover:bg-white/14 disabled:opacity-60"
+              >
+                {query}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <button type="button" onClick={onTryBroader} disabled={retryLocked} className="h-12 rounded-md bg-emerald-400 px-4 text-sm font-black text-[#070A12] transition hover:bg-emerald-300 disabled:opacity-60">Try broader search</button>
+            <button type="button" onClick={onRefresh} disabled={retryLocked} className="h-12 rounded-md border border-white/10 bg-white/8 px-4 text-sm font-black text-white transition hover:bg-white/14 disabled:opacity-60">{retryLocked ? "Try again soon" : "Retry exact search"}</button>
+          </div>
         </div>
       ) : (
         <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{visible.map((listing) => <MarketListingCard key={listing.id} listing={listing} onAddFlip={onAddFlip} />)}</div>
@@ -1817,7 +2007,23 @@ function MarketGalleryPanel({
 }
 
 function MarketSkeletonCard() {
-  return <div className="flex min-h-[440px] flex-col overflow-hidden rounded-md border border-white/10 bg-black/30"><div className="h-52 animate-pulse bg-white/8" /><div className="flex flex-1 flex-col space-y-3 p-3"><div className="h-4 w-3/4 animate-pulse rounded bg-white/10" /><div className="h-3 w-1/2 animate-pulse rounded bg-white/10" /><div className="h-16 animate-pulse rounded bg-white/8" /><div className="mt-auto h-10 animate-pulse rounded bg-white/10" /></div></div>;
+  return (
+    <div className="flex min-h-[440px] flex-col overflow-hidden rounded-md border border-white/10 bg-black/30 shadow-lift">
+      <div className="flex h-52 max-h-52 items-center justify-center border-b border-white/10 bg-gradient-to-br from-[#05070d] via-slate-950 to-black p-3">
+        <div className="h-40 w-28 animate-pulse rounded bg-white/8" />
+      </div>
+      <div className="flex flex-1 flex-col space-y-3 p-3">
+        <div className="h-4 w-3/4 animate-pulse rounded bg-white/10" />
+        <div className="h-3 w-1/2 animate-pulse rounded bg-white/10" />
+        <div className="h-16 animate-pulse rounded bg-white/8" />
+        <div className="mt-auto grid grid-cols-1 gap-2 pt-3 min-[420px]:grid-cols-3">
+          <div className="h-11 animate-pulse rounded bg-white/10" />
+          <div className="h-11 animate-pulse rounded bg-white/10" />
+          <div className="h-11 animate-pulse rounded bg-white/10" />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function MarketListingCard({ listing, onAddFlip, compact }: { listing: MarketGalleryListing; onAddFlip: (record: Omit<FlipRecord, "id">) => void; compact?: boolean }) {
@@ -1993,49 +2199,26 @@ function TabNav({ activeTab, onChange }: { activeTab: TabKey; onChange: (tab: Ta
   );
 }
 
-function ConnectionPanel({
-  status,
-  demoMode,
-  onToggleDemo
-}: {
-  status: AppStatus | null;
-  demoMode: boolean;
-  onToggleDemo: (value: boolean) => void;
-}) {
-  const ebay = status?.ebay;
-  const demo = status?.demo;
+function SharedSportFilterChips({ active, onChange }: { active: SharedSportFilter; onChange: (value: SharedSportFilter) => void }) {
+  const filters: Array<{ value: SharedSportFilter; label: string }> = [
+    { value: "all", label: "All" },
+    { value: "football", label: "Football" },
+    { value: "baseball", label: "Baseball" },
+    { value: "basketball", label: "Basketball" }
+  ];
 
   return (
-    <div className="rounded-md border border-white/10 bg-white/[0.06] p-3 shadow-lift">
-      <div className="flex items-center gap-2">
-        <PlugZap className="h-5 w-5 text-cobalt" aria-hidden="true" />
-        <h2 className="text-lg font-black">eBay connection</h2>
-      </div>
-      <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-sm font-black">{ebay?.status ?? "Pending"}</span>
-          <span className="rounded-md bg-white/10 px-2 py-1 text-xs font-black text-slate-200">
-            ID {ebay?.hasClientId ? "set" : "missing"} / Secret {ebay?.hasClientSecret ? "set" : "missing"}
-          </span>
-        </div>
-        <p className="mt-2 text-sm text-slate-400">
-          {ebay?.message ?? "eBay connection pending. Live active listings require EBAY_CLIENT_ID and EBAY_CLIENT_SECRET."}
-        </p>
-      </div>
-      <label className="mt-3 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-black/20 p-3">
-        <div>
-          <p className="text-sm font-black">Demo Mode</p>
-          <p className="text-xs font-semibold text-slate-400">{demo?.message ?? "Demo Mode only works when ALLOW_DEMO_PRICING=true."}</p>
-        </div>
-        <input
-          type="checkbox"
-          checked={demoMode}
-          disabled={!demo?.allowed}
-          onChange={(event) => onToggleDemo(event.target.checked)}
-          className="h-5 w-5"
-        />
-      </label>
-      {demoMode && <p className="mt-2 rounded-md bg-flame/10 p-2 text-xs font-black text-flame">Demo/Test Data is isolated and never mixed with real comps.</p>}
+    <div className="mt-3 flex gap-2 overflow-x-auto pb-2">
+      {filters.map((filter) => (
+        <button
+          key={filter.value}
+          type="button"
+          onClick={() => onChange(filter.value)}
+          className={`h-10 shrink-0 rounded-full px-4 text-xs font-black transition ${active === filter.value ? "bg-emerald-400 text-[#070A12] shadow-lift" : "bg-white/8 text-slate-300 hover:bg-white/14 hover:text-white"}`}
+        >
+          {filter.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -2854,16 +3037,14 @@ function ProfitEstimator({
 
 function CollectionPanel({
   collection,
-  sportFilter,
-  setSportFilter,
+  activeSportFilter,
   search,
   setSearch,
   onAddFlip,
   onExport
 }: {
   collection: CollectionResponse | null;
-  sportFilter: string;
-  setSportFilter: (value: string) => void;
+  activeSportFilter: SharedSportFilter;
   search: string;
   setSearch: (value: string) => void;
   onAddFlip: (record: Omit<FlipRecord, "id">) => void;
@@ -2884,7 +3065,7 @@ function CollectionPanel({
       </button>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <Metric label="Total value" value={formatMoney(collection?.summary.totalValueCents ?? 0)} />
-        <Metric label="Most valuable" value={mostValuable ? formatMoney(mostValuable.estimatedValueCents) : "N/A"} />
+        <Metric label="Most valuable" value={mostValuable ? formatValueOrPending(mostValuable.estimatedValueCents) : "N/A"} />
       </div>
       {mostValuable && (
         <div className="mt-2 rounded-md border border-white/10 bg-black/20 p-3">
@@ -2895,26 +3076,16 @@ function CollectionPanel({
           </p>
         </div>
       )}
+      <p className="mt-2 text-xs font-semibold text-slate-400">Showing {sharedSportFilterLabel(activeSportFilter)} from the shared sport filter.</p>
       <div className="mt-3 flex gap-2">
         <label className="relative flex-1">
           <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-slate-500" aria-hidden="true" />
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search player, team, brand" className="h-11 w-full rounded-md border border-white/10 bg-black/30 pl-9 pr-3 text-sm font-semibold text-white outline-none placeholder:text-slate-500" />
         </label>
-        <div className="relative">
-          <SlidersHorizontal className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-slate-500" aria-hidden="true" />
-          <select value={sportFilter} onChange={(event) => setSportFilter(event.target.value)} className="h-11 rounded-md border border-white/10 bg-black/30 pl-9 pr-8 text-sm font-bold text-white">
-            <option value="ALL">All</option>
-            {sportOptions.map((sport) => (
-              <option key={sport.value} value={sport.value}>
-                {sport.label}
-              </option>
-            ))}
-          </select>
-        </div>
       </div>
       <div className="mt-3 space-y-2">
         {(collection?.items ?? []).length === 0 ? (
-          <p className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-400">No cards saved yet.</p>
+          <p className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-400">{sharedSportEmptyMessage(activeSportFilter, "No cards saved yet.")}</p>
         ) : (
           collection?.items.map((item) => (
             <article key={item.id} className="rounded-md border border-white/10 bg-black/20 p-3">
@@ -2923,7 +3094,7 @@ function CollectionPanel({
                   <p className="font-black">{item.card.playerName}</p>
                   <p className="text-xs font-semibold text-slate-400">{[item.card.year, item.card.brand, item.card.setName, item.card.parallel].filter(Boolean).join(" - ")}</p>
                 </div>
-                <p className="text-sm font-black">{formatMoney(item.estimatedValueCents)}</p>
+                <p className="text-sm font-black">{formatValueOrPending(item.estimatedValueCents)}</p>
               </div>
               <div className="mt-2 flex items-center justify-between">
                 <SportBadge sport={item.card.sport} />
@@ -2952,7 +3123,7 @@ function CollectionPanel({
             {recentAdds.slice(0, 5).map((item) => (
               <div key={`recent-${item.id}`} className="min-w-44 rounded-md border border-white/10 bg-black/20 p-3">
                 <p className="truncate text-sm font-black">{item.card.playerName}</p>
-                <p className="mt-1 text-xs font-semibold text-slate-400">{formatMoney(item.estimatedValueCents)}</p>
+                <p className="mt-1 text-xs font-semibold text-slate-400">{formatValueOrPending(item.estimatedValueCents)}</p>
               </div>
             ))}
           </div>
@@ -2967,6 +3138,7 @@ function UndervaluedFindsPanel({
   message,
   loading,
   sort,
+  activeSportFilter,
   onSort,
   onRefresh,
   onAddFlip
@@ -2975,11 +3147,13 @@ function UndervaluedFindsPanel({
   message: string;
   loading: boolean;
   sort: DealSort;
+  activeSportFilter: SharedSportFilter;
   onSort: (sort: DealSort) => void;
   onRefresh: () => void;
   onAddFlip: (record: Omit<FlipRecord, "id">) => void;
 }) {
-  const sortedFinds = [...finds].sort((a, b) => {
+  const filteredFinds = finds.filter((find) => dealMatchesSharedSport(find, activeSportFilter));
+  const sortedFinds = [...filteredFinds].sort((a, b) => {
     const profitA = a.estimatedUpsideCents ?? 0;
     const profitB = b.estimatedUpsideCents ?? 0;
     const roiA = a.currentAskingPriceCents > 0 ? profitA / a.currentAskingPriceCents : 0;
@@ -3017,8 +3191,8 @@ function UndervaluedFindsPanel({
           </button>
         ))}
       </div>
-      {finds.length === 0 ? (
-        <p className="mt-3 rounded-md bg-black/20 p-3 text-sm font-bold text-slate-300">{message || "Live deal finder not connected yet."}</p>
+      {filteredFinds.length === 0 ? (
+        <p className="mt-3 rounded-md bg-black/20 p-3 text-sm font-bold text-slate-300">{sharedSportEmptyMessage(activeSportFilter, message || "Live deal finder not connected yet.")}</p>
       ) : (
         <div className="mt-3 space-y-3">
           {sortedFinds.map((find) => {
@@ -3087,19 +3261,22 @@ function UndervaluedFindsPanel({
 
 function FlipTrackerPanel({
   flips,
+  activeSportFilter,
   onUpdate,
   onAdd,
   onExport
 }: {
   flips: FlipRecord[];
+  activeSportFilter: SharedSportFilter;
   onUpdate: (id: string, patch: Partial<FlipRecord>) => void;
   onAdd: (record: Omit<FlipRecord, "id">) => void;
   onExport: () => void;
 }) {
-  const active = flips.filter((flip) => !["Sold", "Passed"].includes(flip.status));
-  const sold = flips.filter((flip) => flip.status === "Sold");
-  const totalInvested = flips.reduce((sum, flip) => sum + flip.purchasePrice, 0);
-  const projectedValue = flips.reduce((sum, flip) => sum + (flip.listedPrice || flip.soldPrice), 0);
+  const filteredFlips = flips.filter((flip) => flipMatchesSharedSport(flip, activeSportFilter));
+  const active = filteredFlips.filter((flip) => !["Sold", "Passed"].includes(flip.status));
+  const sold = filteredFlips.filter((flip) => flip.status === "Sold");
+  const totalInvested = filteredFlips.reduce((sum, flip) => sum + flip.purchasePrice, 0);
+  const projectedValue = filteredFlips.reduce((sum, flip) => sum + (flip.listedPrice || flip.soldPrice), 0);
   const realizedProfit = sold.reduce((sum, flip) => sum + flip.soldPrice - flip.purchasePrice, 0);
   const sortedSold = [...sold].sort((a, b) => b.soldPrice - b.purchasePrice - (a.soldPrice - a.purchasePrice));
   const best = sortedSold[0];
@@ -3147,10 +3324,10 @@ function FlipTrackerPanel({
         Export flips CSV
       </button>
       <div className="mt-3 space-y-3">
-        {flips.length === 0 ? (
-          <p className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-400">No flips tracked yet.</p>
+        {filteredFlips.length === 0 ? (
+          <p className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-400">{sharedSportEmptyMessage(activeSportFilter, "No flips tracked yet.")}</p>
         ) : (
-          flips.map((flip) => (
+          filteredFlips.map((flip) => (
             <article key={flip.id} className="rounded-md border border-white/10 bg-black/20 p-3">
               <Field label="Player" value={flip.player} onChange={(value) => onUpdate(flip.id, { player: value })} />
               <Field label="Card" value={flip.cardSummary} onChange={(value) => onUpdate(flip.id, { cardSummary: value })} />

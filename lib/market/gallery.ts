@@ -16,6 +16,16 @@ export type MarketGalleryListing = {
 };
 
 export const defaultMarketQueries = [
+  "CJ Stroud rookie card",
+  "football rookie card PSA",
+  "basketball rookie card PSA",
+  "baseball rookie card PSA",
+  "Topps Chrome rookie card",
+  "Panini Prizm rookie card",
+  "football rookie card",
+  "CJ Stroud rookie",
+  "2023 Prizm football",
+  "Topps Chrome rookie",
   "2024 NFL rookie card PSA",
   "2023 NFL rookie card autograph",
   "football rookie patch auto card",
@@ -64,6 +74,10 @@ export function isSportsTradingCardListing(listing: Pick<MarketGalleryListing, "
   if (!cardSignalPattern.test(text)) return false;
   if (options.premiumDefault && listing.listedPriceCents < 1000) return false;
   return true;
+}
+
+export function logMarketGalleryFilterCounts(context: string, beforeCount: number, afterCount: number) {
+  console.log("[Market Gallery] filter counts", { context, beforeCount, afterCount });
 }
 
 export function toMarketGalleryListing(listing: ActiveListing): MarketGalleryListing {

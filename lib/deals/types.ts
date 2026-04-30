@@ -12,6 +12,12 @@ export type ActiveListing = {
   listedAt?: string | null;
 };
 
+export type ActiveListingSearchResult = {
+  listings: ActiveListing[];
+  rawCount: number;
+  sampleTitles: string[];
+};
+
 export type DealLabel = "Strong Deal" | "Possible Deal" | "Needs Research" | "Avoid";
 export type FlipScoreLabel = "Strong Buy" | "Watch" | "Risky" | "Avoid";
 
