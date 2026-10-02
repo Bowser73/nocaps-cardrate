@@ -77,10 +77,7 @@ const soldJunkTerms = [
   "custom",
   "reprint",
   "proxy",
-  "pokemon",
-  "pokémon",
-  "tcg",
-  "magic",
+    "magic",
   "yu-gi-oh",
   "cricket",
   "soccer",
@@ -91,6 +88,8 @@ const soldJunkTerms = [
 function scoreSoldComp(card: PricingCard, title: string, condition?: string | null): { accepted: true; score: number; notes: string[] } | { accepted: false; reason: string } {
   const text = cleanToken(title);
   const combinedText = cleanToken(`${title} ${condition ?? ""}`);
+  if (card.sport !== "POKEMON_TCG" && /\b(pokemon|pok.mon|tcg)\b/.test(text)) return { accepted: false, reason: "Pokémon listing does not match sports category" };
+  if (card.sport === "POKEMON_TCG") return { accepted: false, reason: "Use Pokémon Intelligence for exact variant, language, condition and grade matching" };
   const junkTerm = soldJunkTerms.find((term) => text.includes(term));
   if (junkTerm) return { accepted: false, reason: `Excluded junk term: ${junkTerm}` };
   if (!/\b(card|rookie|rc|psa|bgs|sgc|auto|autograph|patch|refractor|prizm|chrome|bowman|topps|panini|numbered)\b|\/(10|25|50|99|199)\b/.test(text)) {
@@ -256,3 +255,4 @@ export class EbaySoldPricingProvider implements PricingProvider {
     };
   }
 }
+

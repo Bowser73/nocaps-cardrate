@@ -6,7 +6,7 @@ const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "NoCaps CardRate",
-  description: "NoCaps CardRate. A NoCapsAI product for scanning, pricing, and tracking sports trading cards."
+  description: "NoCaps CardRate. A NoCapsAI product for scanning, pricing, and tracking sports and Pokémon trading cards."
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -16,3 +16,4 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
+
