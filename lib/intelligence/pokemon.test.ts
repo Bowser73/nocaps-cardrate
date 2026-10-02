@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { analyzePokemon, type PokemonIdentity, type PokemonSale } from './pokemon.ts';
+const card: PokemonIdentity = { name: 'Charizard', set: 'Base Set', number: '4/102', variant: 'Unlimited holo', language: 'English', condition: 'Near mint', gradeCompany: '', grade: '' };
+const now = Date.parse('2026-10-02');
+const sale = (i: number, extra: Partial<PokemonSale> = {}): PokemonSale => ({ ...card, url: `https://www.ebay.com/itm/${i}`, soldAt: '2026-09-01', sold: true, currency: 'USD', priceCents: 10000 + i * 100, ...extra });
+test('median requires three exact sales', () => { assert.equal(analyzePokemon(card, [sale(1), sale(2)], now).medianCents, null); assert.equal(analyzePokemon(card, [sale(1), sale(2), sale(3)], now).medianCents, 10200); });
+test('rejects variant, language, condition and grade mismatches', () => { for (const extra of [{variant:'1st edition holo'}, {language:'Japanese'}, {condition:'Damaged'}, {gradeCompany:'PSA', grade:'10'}]) assert.equal(analyzePokemon(card, [sale(1, extra)], now).count, 0); });
+test('rejects active, stale, future, currency, invalid price and unsafe sources', () => { for (const extra of [{sold:false}, {soldAt:'2025-01-01'}, {soldAt:'2027-01-01'}, {currency:'EUR'}, {priceCents:NaN}, {url:'javascript:alert(1)'}]) assert.equal(analyzePokemon(card, [sale(1, extra)], now).count, 0); });
+test('deduplicates tracking URLs', () => assert.equal(analyzePokemon(card, [sale(1), sale(1, {url:'https://www.ebay.com/itm/1?tracking=2'})], now).count, 1));
+test('identity edits invalidate prior evidence', () => assert.equal(analyzePokemon({...card, number:'5/102'}, [sale(1)], now).count, 0));
+test('incomplete identities block estimation', () => assert.equal(analyzePokemon({...card, variant:''}, [sale(1), sale(2), sale(3)], now).status, 'NEEDS_REVIEW'));

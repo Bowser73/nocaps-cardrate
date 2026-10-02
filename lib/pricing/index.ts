@@ -1,9 +1,8 @@
 import { DemoPricingProvider } from "@/lib/pricing/demo";
-import { buildSoldSearchQuery, EbaySoldPricingProvider } from "@/lib/pricing/ebay";
+import { buildSoldSearchQuery } from "@/lib/pricing/ebay";
 import { calculateEstimate } from "@/lib/pricing/estimate";
-import type { PriceEstimate, PricingCard, PricingDebug, PricingProvider } from "@/lib/pricing/types";
+import type { PriceEstimate, PricingCard, PricingDebug } from "@/lib/pricing/types";
 
-const ebayProvider = new EbaySoldPricingProvider();
 const demoProvider = new DemoPricingProvider();
 
 export async function getSoldPricing(card: PricingCard, options: { demoMode?: boolean; includeDebug?: boolean } = {}): Promise<PriceEstimate> {
@@ -18,10 +17,10 @@ export async function getSoldPricing(card: PricingCard, options: { demoMode?: bo
     }, options.includeDebug);
   }
 
-  if (!process.env.EBAY_CLIENT_ID) {
+  { // Legacy Finding API was decommissioned; credentials alone cannot enable sold pricing.
     const estimate: PriceEstimate = {
       status: "NOT_CONNECTED",
-      message: "Live pricing not connected yet.",
+      message: "Automatic sold pricing is unavailable: the legacy eBay Finding API was retired. Use Pokémon Intelligence to compare verified sale evidence.",
       lowEstimateCents: null,
       averageEstimateCents: null,
       highEstimateCents: null,
@@ -32,7 +31,7 @@ export async function getSoldPricing(card: PricingCard, options: { demoMode?: bo
         potentialGradedValueCents: null,
         gradingSpreadCents: null,
         worthGrading: "UNKNOWN",
-        rationale: "Connect eBay API credentials to calculate live value insights."
+        rationale: "A supported licensed sold-data provider is required for automatic valuation."
       }
     };
     return withPricingDebug(estimate, {
@@ -43,14 +42,6 @@ export async function getSoldPricing(card: PricingCard, options: { demoMode?: bo
     }, options.includeDebug);
   }
 
-  const providers: PricingProvider[] = [ebayProvider];
-  if (options.includeDebug) {
-    const ebayResult = await ebayProvider.getSoldCompsWithDebug(card);
-    return withPricingDebug(calculateEstimate(ebayResult.comps), ebayResult.debug, true);
-  }
-  const settled = await Promise.allSettled(providers.map((provider) => provider.getSoldComps(card)));
-  const comps = settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-  return calculateEstimate(comps);
 }
 
 function withPricingDebug(
@@ -79,3 +70,4 @@ function getConfidenceExplanation(estimate: PriceEstimate) {
   if (percent >= 45) return "Medium confidence: usable sold comps were found, but volume, recency, or spread limits certainty.";
   return "Low confidence: few usable comps or a wide price spread. Review broader matches before relying on this value.";
 }
+
